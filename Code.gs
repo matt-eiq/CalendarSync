@@ -29,7 +29,7 @@ const CONFIG = {
   SYNC_WINDOW_DAYS: 28,
 
   // Trigger interval in minutes
-  TRIGGER_INTERVAL_MINUTES: 10,
+  TRIGGER_INTERVAL_MINUTES: 120,
 
   // PropertiesService key names
   PROP_SYNC_CALENDAR_ID: 'SYNC_CALENDAR_ID',
@@ -306,7 +306,8 @@ function createMirrorEvent(sourceEvent, syncCalendarId, syncMap) {
 
     syncMap[sourceEvent.id] = {
       mirrorId: mirrorEvent.id,
-      hash: computeHash(sourceEvent)
+      hash: computeHash(sourceEvent),
+      endTime: sourceEvent.end.dateTime || sourceEvent.end.date || ''
     };
 
     console.log('Created mirror: "' + (sourceEvent.summary || '(No title)') + '" → ' + mirrorEvent.id);
@@ -330,7 +331,8 @@ function updateMirrorEvent(sourceEvent, mirrorId, syncCalendarId, syncMap) {
 
     syncMap[sourceEvent.id] = {
       mirrorId: mirrorId,
-      hash: computeHash(sourceEvent)
+      hash: computeHash(sourceEvent),
+      endTime: sourceEvent.end.dateTime || sourceEvent.end.date || ''
     };
 
     console.log('Updated mirror: "' + (sourceEvent.summary || '(No title)') + '" (' + mirrorId + ')');
@@ -406,7 +408,8 @@ function recoverSyncMap(syncCalendarId) {
         const sourceId = extProps.private[CONFIG.EXTENDED_PROP_KEY];
         recoveredMap[sourceId] = {
           mirrorId: mirrorEvent.id,
-          hash: '' // Force re-check on next reconcile by using empty hash
+          hash: '', // Force re-check on next reconcile by using empty hash
+          endTime: (mirrorEvent.end && (mirrorEvent.end.dateTime || mirrorEvent.end.date)) || ''
         };
       }
     }
@@ -474,6 +477,7 @@ function reconcile(sourceEvents, syncMap, syncCalendarId, userEmail) {
     return !seenSourceIds[sourceId];
   });
 
+  const now = new Date();
   for (var j = 0; j < orphanIds.length; j++) {
     if (Date.now() - startTime > CONFIG.MAX_RUNTIME_MS) {
       console.warn('Approaching time limit during orphan cleanup. Will continue next run.');
@@ -481,7 +485,18 @@ function reconcile(sourceEvents, syncMap, syncCalendarId, userEmail) {
     }
 
     const sourceId = orphanIds[j];
-    deleteMirrorEvent(sourceId, syncMap[sourceId].mirrorId, syncCalendarId, syncMap);
+    const entry = syncMap[sourceId];
+
+    // If the event has already ended, it just aged out of the sync window —
+    // silently remove it from the map without deleting/cancelling the mirror.
+    if (entry.endTime && new Date(entry.endTime) < now) {
+      console.log('Event aged out (past end time), removing from map: ' + sourceId);
+      delete syncMap[sourceId];
+      continue;
+    }
+
+    // Future event missing from source — it was genuinely deleted/cancelled.
+    deleteMirrorEvent(sourceId, entry.mirrorId, syncCalendarId, syncMap);
     deleted++;
   }
 
